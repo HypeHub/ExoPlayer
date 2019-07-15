@@ -31,12 +31,14 @@ import java.io.IOException;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 
 /**
  * Manages the background loading of {@link Loadable}s.
  */
-public final class Loader implements LoaderErrorThrower {
+public final class MultiLoader implements LoaderErrorThrower {
 
   /**
    * Thrown when an unexpected exception or error is encountered during loading.
@@ -50,7 +52,7 @@ public final class Loader implements LoaderErrorThrower {
   }
 
   /**
-   * An object that can be loaded using a {@link Loader}.
+   * An object that can be loaded using a {@link MultiLoader}.
    */
   public interface Loadable {
 
@@ -70,7 +72,7 @@ public final class Loader implements LoaderErrorThrower {
   }
 
   /**
-   * A callback to be notified of {@link Loader} events.
+   * A callback to be notified of {@link MultiLoader} events.
    */
   public interface Callback<T extends Loadable> {
 
@@ -90,16 +92,16 @@ public final class Loader implements LoaderErrorThrower {
     /**
      * Called when a load has been canceled.
      *
-     * <p>Note: If the {@link Loader} has not been released then there is guaranteed to be a memory
+     * <p>Note: If the {@link MultiLoader} has not been released then there is guaranteed to be a memory
      * barrier between {@link Loadable#load()} exiting and this callback being called. If the {@link
-     * Loader} has been released then this callback may be called before {@link Loadable#load()}
+     * MultiLoader} has been released then this callback may be called before {@link Loadable#load()}
      * exits.
      *
      * @param loadable The loadable whose load has been canceled.
      * @param elapsedRealtimeMs {@link SystemClock#elapsedRealtime} when the load was canceled.
      * @param loadDurationMs The duration in milliseconds of the load since {@link #startLoading}
      *     was called up to the point at which it was canceled.
-     * @param released True if the load was canceled because the {@link Loader} was released. False
+     * @param released True if the load was canceled because the {@link MultiLoader} was released. False
      *     otherwise.
      */
     void onLoadCanceled(T loadable, long elapsedRealtimeMs, long loadDurationMs, boolean released);
@@ -116,21 +118,21 @@ public final class Loader implements LoaderErrorThrower {
      *     was called up to the point at which the error occurred.
      * @param error The load error.
      * @param errorCount The number of errors this load has encountered, including this one.
-     * @return The desired error handling action. One of {@link Loader#RETRY}, {@link
-     *     Loader#RETRY_RESET_ERROR_COUNT}, {@link Loader#DONT_RETRY}, {@link
-     *     Loader#DONT_RETRY_FATAL} or a retry action created by {@link #createRetryAction}.
+     * @return The desired error handling action. One of {@link MultiLoader#RETRY}, {@link
+     *     MultiLoader#RETRY_RESET_ERROR_COUNT}, {@link MultiLoader#DONT_RETRY}, {@link
+     *     MultiLoader#DONT_RETRY_FATAL} or a retry action created by {@link #createRetryAction}.
      */
     LoadErrorAction onLoadError(
         T loadable, long elapsedRealtimeMs, long loadDurationMs, IOException error, int errorCount);
   }
 
   /**
-   * A callback to be notified when a {@link Loader} has finished being released.
+   * A callback to be notified when a {@link MultiLoader} has finished being released.
    */
   public interface ReleaseCallback {
 
     /**
-     * Called when the {@link Loader} has finished being released.
+     * Called when the {@link MultiLoader} has finished being released.
      */
     void onLoaderReleased();
 
@@ -177,7 +179,7 @@ public final class Loader implements LoaderErrorThrower {
     private final @RetryActionType int type;
     private final long retryDelayMillis;
 
-    LoadErrorAction(@RetryActionType int type, long retryDelayMillis) {
+    private LoadErrorAction(@RetryActionType int type, long retryDelayMillis) {
       this.type = type;
       this.retryDelayMillis = retryDelayMillis;
     }
@@ -190,13 +192,13 @@ public final class Loader implements LoaderErrorThrower {
 
   private final ExecutorService downloadExecutorService;
 
-  private LoadTask<? extends Loadable> currentTask;
+  private List<LoadTask<? extends Loadable>> currentTasks = new ArrayList<>();
   private IOException fatalError;
 
   /**
    * @param threadName A name for the loader's thread.
    */
-  public Loader(String threadName) {
+  public MultiLoader(String threadName) {
     this.downloadExecutorService = Util.newSingleThreadExecutor(threadName);
   }
 
@@ -238,21 +240,23 @@ public final class Loader implements LoaderErrorThrower {
   }
 
   /**
-   * Returns whether the {@link Loader} is currently loading a {@link Loadable}.
+   * Returns whether the {@link MultiLoader} is currently loading a {@link Loadable}.
    */
   public boolean isLoading() {
-    return currentTask != null;
+    return !currentTasks.isEmpty();
   }
 
   /**
    * Cancels the current load. This method should only be called when a load is in progress.
    */
   public void cancelLoading() {
-    currentTask.cancel(false);
+    for (LoadTask<? extends Loadable> currentTask : currentTasks) {
+      currentTask.cancel(false);
+    }
   }
 
   /**
-   * Releases the {@link Loader}. This method should be called when the {@link Loader} is no longer
+   * Releases the {@link MultiLoader}. This method should be called when the {@link MultiLoader} is no longer
    * required.
    */
   public void release() {
@@ -260,14 +264,14 @@ public final class Loader implements LoaderErrorThrower {
   }
 
   /**
-   * Releases the {@link Loader}. This method should be called when the {@link Loader} is no longer
+   * Releases the {@link MultiLoader}. This method should be called when the {@link MultiLoader} is no longer
    * required.
    *
    * @param callback An optional callback to be called on the loading thread once the loader has
    *     been released.
    */
   public void release(@Nullable ReleaseCallback callback) {
-    if (currentTask != null) {
+    for (LoadTask<? extends Loadable> currentTask : currentTasks) {
       currentTask.cancel(true);
     }
     if (callback != null) {
@@ -287,9 +291,11 @@ public final class Loader implements LoaderErrorThrower {
   public void maybeThrowError(int minRetryCount) throws IOException {
     if (fatalError != null) {
       throw fatalError;
-    } else if (currentTask != null) {
-      currentTask.maybeThrowError(minRetryCount == Integer.MIN_VALUE
-          ? currentTask.defaultMinRetryCount : minRetryCount);
+    } else if (!currentTasks.isEmpty()) {
+      for (LoadTask<? extends Loadable> currentTask : currentTasks) {
+        currentTask.maybeThrowError(minRetryCount == Integer.MIN_VALUE
+            ? currentTask.defaultMinRetryCount : minRetryCount);
+      }
     }
   }
 
@@ -311,7 +317,7 @@ public final class Loader implements LoaderErrorThrower {
     private final T loadable;
     private final long startTimeMs;
 
-    private @Nullable Loader.Callback<T> callback;
+    private @Nullable MultiLoader.Callback<T> callback;
     private IOException currentError;
     private int errorCount;
 
@@ -319,7 +325,7 @@ public final class Loader implements LoaderErrorThrower {
     private volatile boolean canceled;
     private volatile boolean released;
 
-    public LoadTask(Looper looper, T loadable, Loader.Callback<T> callback,
+    public LoadTask(Looper looper, T loadable, MultiLoader.Callback<T> callback,
         int defaultMinRetryCount, long startTimeMs) {
       super(looper);
       this.loadable = loadable;
@@ -335,8 +341,7 @@ public final class Loader implements LoaderErrorThrower {
     }
 
     public void start(long delayMillis) {
-      Assertions.checkState(currentTask == null);
-      currentTask = this;
+      currentTasks.add(this);
       if (delayMillis > 0) {
         sendEmptyMessageDelayed(MSG_START, delayMillis);
       } else {
@@ -479,11 +484,11 @@ public final class Loader implements LoaderErrorThrower {
 
     private void execute() {
       currentError = null;
-      downloadExecutorService.execute(currentTask);
+      downloadExecutorService.execute(this);
     }
 
     private void finish() {
-      currentTask = null;
+      currentTasks.remove(this);
     }
 
     private long getRetryDelayMillis() {

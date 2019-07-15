@@ -22,6 +22,7 @@ import com.google.android.exoplayer2.Format;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DataSpec;
 import com.google.android.exoplayer2.upstream.Loader.Loadable;
+import com.google.android.exoplayer2.upstream.MultiLoader;
 import com.google.android.exoplayer2.upstream.StatsDataSource;
 import com.google.android.exoplayer2.util.Assertions;
 import java.util.List;
@@ -31,7 +32,7 @@ import java.util.Map;
  * An abstract base class for {@link Loadable} implementations that load chunks of data required
  * for the playback of streams.
  */
-public abstract class Chunk implements Loadable {
+public abstract class Chunk implements Loadable, MultiLoader.Loadable {
 
   /**
    * The {@link DataSpec} that defines the data to be loaded.

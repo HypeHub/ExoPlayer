@@ -41,8 +41,8 @@ import com.google.android.exoplayer2.source.hls.playlist.HlsMasterPlaylist.HlsUr
 import com.google.android.exoplayer2.trackselection.TrackSelection;
 import com.google.android.exoplayer2.upstream.Allocator;
 import com.google.android.exoplayer2.upstream.LoadErrorHandlingPolicy;
-import com.google.android.exoplayer2.upstream.Loader;
-import com.google.android.exoplayer2.upstream.Loader.LoadErrorAction;
+import com.google.android.exoplayer2.upstream.MultiLoader.LoadErrorAction;
+import com.google.android.exoplayer2.upstream.MultiLoader;
 import com.google.android.exoplayer2.util.Assertions;
 import com.google.android.exoplayer2.util.Log;
 import com.google.android.exoplayer2.util.MimeTypes;
@@ -57,8 +57,8 @@ import java.util.List;
  * Loads {@link HlsMediaChunk}s obtained from a {@link HlsChunkSource}, and provides
  * {@link SampleStream}s from which the loaded media can be consumed.
  */
-/* package */ final class HlsSampleStreamWrapper implements Loader.Callback<Chunk>,
-    Loader.ReleaseCallback, SequenceableLoader, ExtractorOutput, UpstreamFormatChangedListener {
+/* package */ final class HlsSampleStreamWrapper implements MultiLoader.Callback<Chunk>,
+    MultiLoader.ReleaseCallback, SequenceableLoader, ExtractorOutput, UpstreamFormatChangedListener {
 
   /**
    * A callback to be notified of events.
@@ -90,7 +90,7 @@ import java.util.List;
   private final Allocator allocator;
   private final Format muxedAudioFormat;
   private final LoadErrorHandlingPolicy loadErrorHandlingPolicy;
-  private final Loader loader;
+  private final MultiLoader loader;
   private final EventDispatcher eventDispatcher;
   private final HlsChunkSource.HlsChunkHolder nextChunkHolder;
   private final ArrayList<HlsMediaChunk> mediaChunks;
@@ -163,7 +163,7 @@ import java.util.List;
     this.muxedAudioFormat = muxedAudioFormat;
     this.loadErrorHandlingPolicy = loadErrorHandlingPolicy;
     this.eventDispatcher = eventDispatcher;
-    loader = new Loader("Loader:HlsSampleStreamWrapper");
+    loader = new MultiLoader("Loader:HlsSampleStreamWrapper");
     nextChunkHolder = new HlsChunkSource.HlsChunkHolder();
     sampleQueueTrackIds = new int[0];
     audioSampleQueueIndex = C.INDEX_UNSET;
@@ -538,13 +538,13 @@ import java.util.List;
     if (isPendingReset()) {
       return pendingResetPositionUs;
     } else {
-      return loadingFinished ? C.TIME_END_OF_SOURCE : getLastMediaChunk().endTimeUs;
+      return loadingFinished ? C.TIME_END_OF_SOURCE : (getLastMediaChunk().endTimeUs - 200_000);
     }
   }
 
   @Override
   public boolean continueLoading(long positionUs) {
-    if (loadingFinished || loader.isLoading()) {
+    if (loadingFinished) {
       return false;
     }
 
@@ -686,15 +686,15 @@ import java.util.List;
           pendingResetPositionUs = lastSeekPositionUs;
         }
       }
-      loadErrorAction = Loader.DONT_RETRY;
+      loadErrorAction = MultiLoader.DONT_RETRY;
     } else /* did not blacklist */ {
       long retryDelayMs =
           loadErrorHandlingPolicy.getRetryDelayMsFor(
               loadable.type, loadDurationMs, error, errorCount);
       loadErrorAction =
           retryDelayMs != C.TIME_UNSET
-              ? Loader.createRetryAction(/* resetErrorCount= */ false, retryDelayMs)
-              : Loader.DONT_RETRY_FATAL;
+              ? MultiLoader.createRetryAction(/* resetErrorCount= */ false, retryDelayMs)
+              : MultiLoader.DONT_RETRY_FATAL;
     }
 
     eventDispatcher.loadError(
