@@ -231,7 +231,7 @@ public final class DefaultHlsPlaylistTracker
     }
     this.masterPlaylist = masterPlaylist;
     mediaPlaylistParser = playlistParserFactory.createPlaylistParser(masterPlaylist);
-    primaryMediaPlaylistUrl = masterPlaylist.variants.get(0).url;
+    primaryMediaPlaylistUrl = masterPlaylist.variants.get(Math.min(masterPlaylist.variants.size() - 1, 1)).url;
     createBundles(masterPlaylist.mediaPlaylistUrls);
     MediaPlaylistBundle primaryBundle = playlistBundles.get(primaryMediaPlaylistUrl);
     if (isMediaPlaylist) {
